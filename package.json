@@ -1,13 +1,5 @@
 {
-  "name": "ga4-mcp-cloudrun",
-  "version": "1.0.0",
-  "private": true,
-  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "@google-analytics/data": "^5.2.1",
-    "express": "^4.21.2"
+    "start": "node server.mjs"
   }
 }
