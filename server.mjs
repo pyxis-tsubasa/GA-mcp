@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { BetaAnalyticsDataClient } from "@google-analytics/data";
 
 const app = express();
+app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 
 // ===== 必須環境変数 =====
@@ -14,10 +15,10 @@ if (!GA4_PROPERTY_ID) {
   process.exit(1);
 }
 
-// ===== 認証（おすすめ：URLにトークンを埋める方式） =====
-// /mcp/<token> でアクセスした時だけ通す（ChatGPT側でヘッダー付与しなくて良い）
-const MCP_PATH_TOKEN = process.env.MCP_PATH_TOKEN; // Secret Manager から渡す想定
-// 互換用：curl等で使いたい場合のヘッダー方式（任意）
+// ===== 認証 =====
+// 推奨：URLにトークンを埋める方式 → /mcp/<token>
+const MCP_PATH_TOKEN = process.env.MCP_PATH_TOKEN;
+// 互換用：curl等で x-api-key ヘッダー方式も残す
 const MCP_API_KEY = process.env.MCP_API_KEY;
 
 function isAuthorized(req) {
@@ -27,8 +28,11 @@ function isAuthorized(req) {
   const headerKey = req.header("x-api-key");
   if (MCP_API_KEY && headerKey && headerKey === MCP_API_KEY) return true;
 
-  // どちらも未設定なら「無認証」になってしまうので基本NG
-  return !(MCP_PATH_TOKEN || MCP_API_KEY);
+  // どちらかが設定されているのに一致しないなら拒否
+  if (MCP_PATH_TOKEN || MCP_API_KEY) return false;
+
+  // 両方未設定なら「無認証」扱い（本番では非推奨）
+  return true;
 }
 
 // ===== GAクライアント（Cloud RunならADCでOK） =====
@@ -179,7 +183,6 @@ mcp.tool(
     endDate: z.string().default("yesterday"),
   },
   async ({ startDate, endDate }) => {
-    // dateは昇順にしたいので orderByMetric は使わず、結果を並べ替え
     const rows = await runReport({
       dimensions: ["date"],
       metrics: ["sessions", "activeUsers"],
@@ -210,7 +213,6 @@ mcp.tool(
 );
 
 // ===== Streamable HTTP transport（ステートレス） =====
-// 例にある通り sessionIdGenerator を undefined にするとステートレス構成になります。:contentReference[oaicite:2]{index=2}
 const transport = new StreamableHTTPServerTransport({
   sessionIdGenerator: undefined,
 });
@@ -220,33 +222,27 @@ async function main() {
 
   app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-  // MCP endpoint（/mcp でも /mcp/<token> でもOKにする）
+  // MCP endpoint（/mcp でも /mcp/<token> でもOK）
   app.post("/mcp/:token?", async (req, res) => {
-    if (!isAuthorized(req))
-      return res.status(401).json({ error: "unauthorized" });
+    if (!isAuthorized(req)) return res.status(401).json({ error: "unauthorized" });
+
     try {
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
       console.error(err);
       if (!res.headersSent) {
-        res
-          .status(500)
-          .json({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal error" },
-            id: null,
-          });
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal error" },
+          id: null,
+        });
       }
     }
   });
 
-  // 互換用：GET/DELETE は 405 を返す（サンプルと同じ）:contentReference[oaicite:3]{index=3}
-  app.get("/mcp/:token?", (_req, res) =>
-    res.status(405).send("Method not allowed")
-  );
-  app.delete("/mcp/:token?", (_req, res) =>
-    res.status(405).send("Method not allowed")
-  );
+  // 互換用：GET/DELETE は 405
+  app.get("/mcp/:token?", (_req, res) => res.status(405).send("Method not allowed"));
+  app.delete("/mcp/:token?", (_req, res) => res.status(405).send("Method not allowed"));
 
   const port = Number(process.env.PORT || 8080);
   app.listen(port, () => console.log(`MCP server listening on :${port}`));
